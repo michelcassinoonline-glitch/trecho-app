@@ -36,7 +36,7 @@ export default function AppPage() {
           .select('*')
           .eq('user_id', session.user.id)
           .eq('is_active', true)
-          .single()
+          .maybeSingle()
 
         if (error && error.code !== 'PGRST116') {
           throw error

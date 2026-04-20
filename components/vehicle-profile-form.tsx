@@ -72,7 +72,7 @@ export function VehicleProfileForm({ userId, onProfileSaved }: VehicleProfileFor
           },
         ])
         .select()
-        .single()
+        .maybeSingle()
 
       if (insertError) throw insertError
 
