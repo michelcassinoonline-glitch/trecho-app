@@ -1,8 +1,7 @@
 const path = require('path');
 
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  distDir: process.env.NEXT_DIST_DIR || '.next',
+const nextConfig = {,
   output: process.env.NEXT_OUTPUT_MODE,
   productionBrowserSourceMaps: false,
   experimental: {
