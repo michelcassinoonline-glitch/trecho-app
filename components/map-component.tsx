@@ -25,7 +25,7 @@ export function MapComponent({ vehicleProfile }: MapComponentProps) {
 
   useEffect(() => {
     setIsMounted(true)
-  }, [isMounted])
+  }, [])
 
   if (!isMounted) {
     return (
@@ -38,5 +38,10 @@ export function MapComponent({ vehicleProfile }: MapComponentProps) {
     )
   }
 
-  return <MapContent vehicleProfile={vehicleProfile} />
+  return (
+    <MapContent
+      key={`${vehicleProfile.vehicle_type}-${vehicleProfile.height_m}-${vehicleProfile.axles}-${vehicleProfile.total_weight_kg}-${vehicleProfile.load_type}`}
+      vehicleProfile={vehicleProfile}
+    />
+  )
 }
