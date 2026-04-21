@@ -8,7 +8,7 @@ import { haversineDistance } from '@/lib/utils'
 import { PointDetailsSheet } from './point-details-sheet'
 import { CreatePointModal } from './create-point-modal'
 import { Button } from '@/components/ui/button'
-import { Plus, MapPin } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import type { VehicleProfile, Point } from '@/lib/types'
 
 interface MapContentProps {
@@ -16,7 +16,12 @@ interface MapContentProps {
 }
 
 export default function MapContent({ vehicleProfile }: MapContentProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
+  const mounted = useRef(true)
+  const watchIdRef = useRef<number | null>(null)
+  const intervalRef = useRef<number | null>(null)
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null)
   const [points, setPoints] = useState<Point[]>([])
   const [selectedPoint, setSelectedPoint] = useState<Point | null>(null)
@@ -25,77 +30,184 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
   const markersRef = useRef<L.Marker[]>([])
 
   const POINT_ICONS: Record<string, { emoji: string; color: string }> = {
-    'balance': { emoji: '🔴', color: '#ef4444' },
-    'prf': { emoji: '🔵', color: '#3b82f6' },
-    'toll': { emoji: '🟡', color: '#eab308' },
-    'gas_station': { emoji: '🟢', color: '#22c55e' },
+    balance: { emoji: '🔴', color: '#ef4444' },
+    prf: { emoji: '🔵', color: '#3b82f6' },
+    toll: { emoji: '🟡', color: '#eab308' },
+    gas_station: { emoji: '🟢', color: '#22c55e' },
   }
 
-  // Initialize map
+  // Ajusta a altura do container para preencher a viewport restante (considera header se achar)
+  const adjustContainerHeight = () => {
+    const el = containerRef.current
+    if (!el) return
+
+    // Tenta detectar o header/toolbar no topo da página para subtrair sua altura
+    let headerHeight = 0
+    try {
+      const headerEl = document.querySelector('.max-w-6xl') as HTMLElement | null
+      if (headerEl) headerHeight = Math.ceil(headerEl.getBoundingClientRect().height)
+    } catch (e) {
+      headerHeight = 0
+    }
+
+    const newHeight = Math.max(window.innerHeight - headerHeight, 300) // 300px mínimo
+    el.style.minHeight = `${Math.max(300, newHeight)}px`
+    el.style.height = `${newHeight}px`
+    console.debug('[map] container adjusted height ->', newHeight, 'headerHeight=', headerHeight)
+  }
+
+  // Inicializa o mapa UMA vez usando containerRef (evita id duplicado)
   useEffect(() => {
-    if (!mapRef.current) {
-      const map = L.map('map').setView([-15.8, -48.0], 10)
+    mounted.current = true
 
-      L.tileLayer('https://upload.wikimedia.org/wikipedia/commons/thumb/b/bd/OSM%2C_entire_world_map_at_zoom_level_0_in_single_tile.svg/960px-OSM%2C_entire_world_map_at_zoom_level_0_in_single_tile.svg.png?_=20180117110624', {
-        attribution: '&copy; OpenStreetMap contributors',
-        maxZoom: 19,
-      }).addTo(map)
+    // Garante tamanho do container antes de iniciar o mapa
+    adjustContainerHeight()
 
-      mapRef.current = map
+    if (!mapRef.current && containerRef.current) {
+      try {
+        console.debug('[map] existing leaflet containers:', document.querySelectorAll('.leaflet-container').length)
+
+        const map = L.map(containerRef.current as HTMLDivElement, { preferCanvas: true, center: [-15.8, -48.0], zoom: 10 })
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap contributors',
+          maxZoom: 19,
+        }).addTo(map)
+
+        mapRef.current = map
+
+        // Força recalculo de tamanho alguns ms depois (quando CSS já estiver aplicado)
+        setTimeout(() => {
+          try {
+            map.invalidateSize()
+            window.dispatchEvent(new Event('resize'))
+            console.debug('[map] invalidateSize + resize dispatched')
+          } catch (e) {
+            // ignore
+          }
+        }, 250)
+
+        // Observador de resize do container: quando muda tamanho, invalida o mapa
+        if ('ResizeObserver' in window) {
+          resizeObserverRef.current = new ResizeObserver(() => {
+            try {
+              map.invalidateSize()
+            } catch (e) {
+              // ignore
+            }
+          })
+          resizeObserverRef.current.observe(containerRef.current)
+        } else {
+          const onResize = () => {
+            try {
+              map.invalidateSize()
+            } catch (e) {}
+          }
+          window.addEventListener('resize', onResize)
+          resizeObserverRef.current = {
+            // @ts-ignore - fake disconnect for cleanup code
+            disconnect: () => window.removeEventListener('resize', onResize),
+          } as any
+        }
+      } catch (err) {
+        console.error('Erro ao inicializar mapa:', err)
+      }
     }
 
     return () => {
-      // Cleanup on unmount
+      mounted.current = false
+
+      if (resizeObserverRef.current) {
+        try {
+          resizeObserverRef.current.disconnect()
+        } catch (e) {}
+        resizeObserverRef.current = null
+      }
+
+      if (mapRef.current) {
+        try {
+          mapRef.current.off()
+          mapRef.current.remove()
+        } catch (e) {
+          console.warn('Erro ao remover mapa:', e)
+        } finally {
+          mapRef.current = null
+        }
+      }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Get user location
+  // Reajusta altura se a janela mudar (ex: header alterado) e força invalidation
   useEffect(() => {
-    if ('geolocation' in navigator) {
-      navigator.geolocation.watchPosition(
+    const onResize = () => {
+      adjustContainerHeight()
+      try {
+        mapRef.current?.invalidateSize()
+      } catch (e) {}
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // Geolocation (watchPosition) com cleanup
+  useEffect(() => {
+    if (!('geolocation' in navigator)) {
+      setLoading(false)
+      return
+    }
+
+    try {
+      const id = navigator.geolocation.watchPosition(
         (position) => {
           const { latitude, longitude } = position.coords
+          if (!mounted.current) return
           setUserLocation({ lat: latitude, lng: longitude })
-
           if (mapRef.current) {
-            mapRef.current.setView([latitude, longitude], 14)
+            try {
+              mapRef.current.setView([latitude, longitude], 14)
+              mapRef.current.invalidateSize()
+            } catch (e) {}
           }
         },
         (error) => {
           console.error('Geolocation error:', error)
-          setLoading(false)
+          if (mounted.current) setLoading(false)
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 5000,
+          timeout: 10000,
         }
       )
+
+      watchIdRef.current = id
+    } catch (err) {
+      console.error('Erro ao iniciar geolocation:', err)
+      setLoading(false)
+    }
+
+    return () => {
+      if (watchIdRef.current !== null) {
+        try {
+          navigator.geolocation.clearWatch(watchIdRef.current)
+        } catch (e) {
+          console.warn('Erro ao limpar watchPosition:', e)
+        } finally {
+          watchIdRef.current = null
+        }
+      }
     }
   }, [])
 
-  // Add user marker
-  useEffect(() => {
-    if (!mapRef.current || !userLocation) return
-
-    const userMarker = L.marker([userLocation.lat, userLocation.lng], {
-      icon: L.icon({
-        iconUrl: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI4IiBmaWxsPSIjMDAwIi8+PC9zdmc+',
-        iconSize: [24, 24],
-        iconAnchor: [12, 12],
-      }),
-    })
-      .addTo(mapRef.current!)
-      .bindPopup('Sua posicao atual')
-
-    return () => {
-      mapRef.current?.removeLayer(userMarker)
-    }
-  }, [userLocation])
-
-  // Fetch nearby points
+  // Fetch nearby points periodicamente quando houver userLocation
   useEffect(() => {
     if (!userLocation) return
+
+    let cancelled = false
 
     const fetchPoints = async () => {
       try {
         const supabase = createClient()
-
         const { data, error } = await supabase.rpc('get_nearby_points', {
           lat: userLocation.lat,
           lng: userLocation.lng,
@@ -116,42 +228,78 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
           ),
         }))
 
-        setPoints(pointsWithDistance)
-        setLoading(false)
+        if (!cancelled && mounted.current) {
+          setPoints(pointsWithDistance)
+          setLoading(false)
+          // garante que mapa reajuste ao receber pontos
+          setTimeout(() => {
+            try {
+              mapRef.current?.invalidateSize()
+              window.dispatchEvent(new Event('resize'))
+            } catch (e) {}
+          }, 120)
+        }
       } catch (err) {
         console.error('Error fetching points:', err)
-        setLoading(false)
+        if (mounted.current) setLoading(false)
       }
     }
 
+    // primeira chamada imediata
     fetchPoints()
-    const interval = setInterval(fetchPoints, 10000)
+    // intervalo periódico
+    const intId = window.setInterval(fetchPoints, 10000)
+    intervalRef.current = intId
 
-    return () => clearInterval(interval)
+    return () => {
+      cancelled = true
+      if (intervalRef.current !== null) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+    }
   }, [userLocation, vehicleProfile])
 
-  // Update markers
+  // Atualiza markers com limpeza adequada
   useEffect(() => {
     if (!mapRef.current) return
 
-    // Clear old markers
-    markersRef.current.forEach((marker) => mapRef.current?.removeLayer(marker))
-    markersRef.current = []
+    // Remove marcadores antigos do mapa
+    try {
+      markersRef.current.forEach((m) => {
+        try {
+          mapRef.current?.removeLayer(m)
+        } catch (e) {
+          // ignore individual remove errors
+        }
+      })
+    } finally {
+      markersRef.current = []
+    }
 
-    // Add new markers
+    // Adiciona novos marcadores
     points.forEach((point) => {
       const iconData = POINT_ICONS[point.point_type] || { emoji: '📍', color: '#666' }
 
-      const markerElement = document.createElement('div')
-      markerElement.className = 'flex items-center justify-center'
-      markerElement.innerHTML = `
-        <div style="background: ${iconData.color}; border-radius: 50%; width: 40px; height: 40px; display: flex; align-items: center; justify-center; font-size: 20px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+      const html = `
+        <div style="
+          background: ${iconData.color};
+          border-radius: 50%;
+          width: 40px;
+          height: 40px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 20px;
+          cursor: pointer;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        ">
           ${iconData.emoji}
         </div>
       `
 
       const customIcon = L.divIcon({
-        html: markerElement.outerHTML,
+        html,
         iconSize: [40, 40],
         iconAnchor: [20, 20],
         popupAnchor: [0, -20],
@@ -160,7 +308,10 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
       const marker = L.marker([point.latitude, point.longitude], {
         icon: customIcon,
       })
-        .on('click', () => setSelectedPoint(point))
+        .on('click', () => {
+          if (!mounted.current) return
+          setSelectedPoint(point)
+        })
         .addTo(mapRef.current!)
 
       markersRef.current.push(marker)
@@ -169,18 +320,17 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
 
   return (
     <div className="relative w-full h-full">
-      <div id="map" className="w-full h-full" />
+      <div ref={containerRef} className="w-full h-full min-h-[300px]" />
 
-      {/* Floating Action Button */}
       <Button
         onClick={() => setShowCreateModal(true)}
         className="absolute bottom-6 right-6 rounded-full w-14 h-14 p-0 shadow-lg hover:shadow-xl"
         size="icon"
+        aria-label="Criar ponto"
       >
         <Plus className="w-6 h-6" />
       </Button>
 
-      {/* Point Details Sheet */}
       {selectedPoint && (
         <PointDetailsSheet
           point={selectedPoint}
@@ -189,7 +339,6 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
         />
       )}
 
-      {/* Create Point Modal */}
       {showCreateModal && (
         <CreatePointModal
           userLocation={userLocation}
