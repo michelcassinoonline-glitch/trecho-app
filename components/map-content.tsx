@@ -41,7 +41,7 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
     const el = containerRef.current
     if (!el) return
     // Força largura mínima para viewport e altura razoável
-    el.style.width = `${window.innerWidth}px`
+    el.style.width = "100%"
     el.style.minHeight = '300px'
     el.style.height = `${Math.max(400, window.innerHeight - 80)}px`
     try {
