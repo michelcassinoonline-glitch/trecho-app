@@ -36,75 +36,62 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
     gas_station: { emoji: '🟢', color: '#22c55e' },
   }
 
-  // Ajusta a altura do container para preencher a viewport restante (considera header se achar)
-  const adjustContainerHeight = () => {
+  // Ajusta o tamanho do container para evitar width/height restritos por ancestrais
+  const setContainerSize = () => {
     const el = containerRef.current
     if (!el) return
-
-    // Tenta detectar o header/toolbar no topo da página para subtrair sua altura
-    let headerHeight = 0
+    // Força largura mínima para viewport e altura razoável
+    el.style.width = `${window.innerWidth}px`
+    el.style.minHeight = '300px'
+    el.style.height = `${Math.max(400, window.innerHeight - 80)}px`
     try {
-      const headerEl = document.querySelector('.max-w-6xl') as HTMLElement | null
-      if (headerEl) headerHeight = Math.ceil(headerEl.getBoundingClientRect().height)
-    } catch (e) {
-      headerHeight = 0
-    }
-
-    const newHeight = Math.max(window.innerHeight - headerHeight, 300) // 300px mínimo
-    el.style.minHeight = `${Math.max(300, newHeight)}px`
-    el.style.height = `${newHeight}px`
-    console.debug('[map] container adjusted height ->', newHeight, 'headerHeight=', headerHeight)
+      mapRef.current?.invalidateSize()
+    } catch (e) {}
   }
 
-  // Inicializa o mapa UMA vez usando containerRef (evita id duplicado)
   useEffect(() => {
     mounted.current = true
-
-    // Garante tamanho do container antes de iniciar o mapa
-    adjustContainerHeight()
+    // garante tamanho do container antes de iniciar o mapa
+    setContainerSize()
 
     if (!mapRef.current && containerRef.current) {
       try {
-        console.debug('[map] existing leaflet containers:', document.querySelectorAll('.leaflet-container').length)
-
         const map = L.map(containerRef.current as HTMLDivElement, { preferCanvas: true, center: [-15.8, -48.0], zoom: 10 })
+        // Usa OSM tiles (corrige o problema de "grade" causado pela imagem mundial do Wikimedia)
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '&copy; OpenStreetMap contributors',
           maxZoom: 19,
+          tileSize: 256,
+          detectRetina: true,
         }).addTo(map)
 
         mapRef.current = map
 
-        // Força recalculo de tamanho alguns ms depois (quando CSS já estiver aplicado)
+        // recalcula tamanho alguns ms depois
         setTimeout(() => {
           try {
             map.invalidateSize()
             window.dispatchEvent(new Event('resize'))
-            console.debug('[map] invalidateSize + resize dispatched')
-          } catch (e) {
-            // ignore
-          }
+          } catch (e) {}
         }, 250)
 
-        // Observador de resize do container: quando muda tamanho, invalida o mapa
+        // Observador de resize do container
         if ('ResizeObserver' in window) {
           resizeObserverRef.current = new ResizeObserver(() => {
             try {
-              map.invalidateSize()
-            } catch (e) {
-              // ignore
-            }
+              setContainerSize()
+            } catch (e) {}
           })
           resizeObserverRef.current.observe(containerRef.current)
         } else {
           const onResize = () => {
             try {
-              map.invalidateSize()
+              setContainerSize()
             } catch (e) {}
           }
           window.addEventListener('resize', onResize)
           resizeObserverRef.current = {
-            // @ts-ignore - fake disconnect for cleanup code
+            // @ts-ignore
             disconnect: () => window.removeEventListener('resize', onResize),
           } as any
         }
@@ -113,8 +100,18 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
       }
     }
 
+    // atualiza tamanho quando janela redimensiona
+    const onWindowResize = () => {
+      setContainerSize()
+    }
+    window.addEventListener('resize', onWindowResize)
+
     return () => {
       mounted.current = false
+
+      try {
+        window.removeEventListener('resize', onWindowResize)
+      } catch (e) {}
 
       if (resizeObserverRef.current) {
         try {
@@ -135,18 +132,6 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Reajusta altura se a janela mudar (ex: header alterado) e força invalidation
-  useEffect(() => {
-    const onResize = () => {
-      adjustContainerHeight()
-      try {
-        mapRef.current?.invalidateSize()
-      } catch (e) {}
-    }
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
   }, [])
 
   // Geolocation (watchPosition) com cleanup
@@ -231,7 +216,6 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
         if (!cancelled && mounted.current) {
           setPoints(pointsWithDistance)
           setLoading(false)
-          // garante que mapa reajuste ao receber pontos
           setTimeout(() => {
             try {
               mapRef.current?.invalidateSize()
@@ -245,9 +229,7 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
       }
     }
 
-    // primeira chamada imediata
     fetchPoints()
-    // intervalo periódico
     const intId = window.setInterval(fetchPoints, 10000)
     intervalRef.current = intId
 
@@ -264,20 +246,16 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
   useEffect(() => {
     if (!mapRef.current) return
 
-    // Remove marcadores antigos do mapa
     try {
       markersRef.current.forEach((m) => {
         try {
           mapRef.current?.removeLayer(m)
-        } catch (e) {
-          // ignore individual remove errors
-        }
+        } catch (e) {}
       })
     } finally {
       markersRef.current = []
     }
 
-    // Adiciona novos marcadores
     points.forEach((point) => {
       const iconData = POINT_ICONS[point.point_type] || { emoji: '📍', color: '#666' }
 
@@ -320,7 +298,8 @@ export default function MapContent({ vehicleProfile }: MapContentProps) {
 
   return (
     <div className="relative w-full h-full">
-      <div ref={containerRef} className="w-full h-full min-h-[300px]" />
+      {/* container controlado por ref - seu tamanho será ajustado em runtime */}
+      <div ref={containerRef} className="w-full h-full" />
 
       <Button
         onClick={() => setShowCreateModal(true)}
